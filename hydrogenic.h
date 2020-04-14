@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <cmath>
+#include <functional>
 #include <Eigen/Dense>
 
 using namespace std;
@@ -21,24 +22,14 @@ enum class Mode{ FORWARD, BACKWARD };
 
 enum GridType{ HOMOGENEOUS, THIJSSEN };
 
-template <typename ...T> 
-using VerletField = double(*)(double&, double&, T...);
+template <typename X, typename ...T>
+using Func = function<double(X&, double&, T&...)>;
 
-template <typename ...T> class Func{
-	public:
-		Func() = default;
-		Func(VerletField<T...> f): f(f){}
-		Func(const Func &o): f(o.f){}
-		~Func() = default;
-		double operator()(double &x, double &y, T ...par){return f(x, y, par...);}
-	private:
-		VerletField<T...> f;
-};
-
-template <typename ...T> ArrayXd Verlet(double y0, double y1, ArrayXd &t, 
-		double step, Mode m, Func<T...> f, T... par){
+template <typename X, typename ...T> ArrayXd Verlet(double y0, double y1, 
+		Eigen::Array<X, Dynamic, 1> &t, double step, Mode m, Func<X, T...> &f, T& ...par){
 	int n = t.size();
-	ArrayXd tt(n), y(n);
+	ArrayXd y(n);
+	Array<X, Dynamic, 1> tt(n);
 	switch(m){
 		case Mode::FORWARD:
 			y(0) = y0;
@@ -99,18 +90,19 @@ template <typename GRID, typename ...T> class Verlet_HZorb{
 		~Verlet_HZorb();
 		ArrayXd u() const;
 		ArrayXd r() const;
+		GRID* grid() const;
 		double energy() const;
 	protected:
-		void __integrate(double&, double&, T...);
+		void __integrate(double&, double&, T&...);
 		GRID *gr;
 		double e;
-		Func<T...> V;
+		Func<double, T...> V;
 	private:
 		int Z, n, l;
 		ArrayXd uu;
 };
 
-using VHZorbHOM = Verlet_HZorb<HomogeneousGrid, int&, int&, double&>;
+using VHZorbHOM = Verlet_HZorb<HomogeneousGrid, int, int, double>;
 
 class Verlet_HZorb_HOM : public VHZorbHOM{
 	public:
@@ -119,13 +111,13 @@ class Verlet_HZorb_HOM : public VHZorbHOM{
 		static double __V(double&, double&, int&, int&, double&);
 };
 
-using VHZorbTHI = Verlet_HZorb<ThijssenGrid, int&, int&, ThijssenGrid*, double&>;
+using VHZorbTHI = Verlet_HZorb<ThijssenGrid, int, int, ThijssenGrid, double>;
 
 class Verlet_HZorb_THI : public VHZorbTHI{
 	public:
 		Verlet_HZorb_THI(int, int, int, int, double, double, double);
 	private:
-		static double __V(double &, double &, int&, int&, ThijssenGrid*, double&);
+		static double __V(double&, double&, int&, int&, ThijssenGrid&, double&);
 };
 
 /*************************************************
@@ -137,7 +129,7 @@ Grid::Grid(unsigned long nmax, double rmax):nmax(nmax), rmax(rmax), h(rmax/nmax)
 Grid::Grid(const Grid &o): nmax(o.nmax), rmax(o.rmax), h(o.h), r(o.r){}
 
 HomogeneousGrid::HomogeneousGrid(unsigned long nmax, double rmax): Grid(nmax, rmax){
-	Grid::r = ArrayXd::LinSpaced(nmax, 0., nmax-1)*Grid::h + EPS;
+	Grid::r = ArrayXd::LinSpaced(nmax, 0., nmax)*Grid::h + EPS;
 }
 
 HomogeneousGrid::HomogeneousGrid(const HomogeneousGrid &o): Grid(o){}
@@ -156,7 +148,7 @@ ThijssenGrid::ThijssenGrid(unsigned long nmax, double rmax,
 ThijssenGrid::ThijssenGrid(const ThijssenGrid &o): Grid(o), delta(o.delta), rp(o.rp){}
 
 ArrayXd ThijssenGrid::jacobian() const{ 
-	return exp(.5*delta*ArrayXd::LinSpaced(Grid::nmax, 0., Grid::nmax-1));
+	return rp*delta*exp(delta*ArrayXd::LinSpaced(Grid::nmax, 0., Grid::nmax-1));
 }
 
 ArrayXd ThijssenGrid::wfFactor() const{
@@ -168,18 +160,18 @@ Verlet_HZorb<GRID, T...>::Verlet_HZorb(int Z, int n, int l): Z(Z), n(n), l(l){}
 
 template <typename GRID, class ...T>
 Verlet_HZorb<GRID, T...>::Verlet_HZorb(const Verlet_HZorb &o):
-	Z(o.Z), n(o.n), l(o.l), V(o.e), e(o.e){}
+	Z(o.Z), n(o.n), l(o.l), V(*o.V), e(o.e){}
 
 template <typename GRID, class ...T>
 Verlet_HZorb<GRID, T...>::~Verlet_HZorb(){delete gr;}
 
 template <typename GRID, class ...T> void Verlet_HZorb<GRID, T...>::__integrate(double &step, 
-	double &accuracy, T... par){
+	double &accuracy, T& ...par){
 	double emin=-2.*pow(Z, 2), emax=EPS;
 	ArrayXd uuu, j = ArrayXd::LinSpaced(gr->nmax, 0, gr->nmax-1);
 	while (abs(emax-emin)>accuracy){
 		e = .5*(emax+emin);
-		uu = Verlet<T...>(0., 1e-10, gr->r, gr->h, Mode::BACKWARD, V, par...);
+		uu = Verlet<double, T...>(0., 1e-10, gr->r, gr->h, Mode::BACKWARD, V, par...);
 		uu *= gr->wfFactor();
 		int nodes = 0;
 		for (int i=0; i<gr->nmax-1; ++i)
@@ -194,6 +186,10 @@ template <typename GRID, class ...T> void Verlet_HZorb<GRID, T...>::__integrate(
 template <typename GRID, class ...T> ArrayXd Verlet_HZorb<GRID, T...>::r() const{ return gr->r; }
 
 template <typename GRID, class ...T> ArrayXd Verlet_HZorb<GRID, T...>::u() const{ return uu; }
+
+template <typename GRID, class ...T> GRID* Verlet_HZorb<GRID, T...>::grid() const{ 
+	return new GRID(*gr);
+}
 
 template <typename GRID, class ...T> double Verlet_HZorb<GRID, T...>::energy() const{ return e; }
 
@@ -215,12 +211,12 @@ Verlet_HZorb_THI::Verlet_HZorb_THI(int Z, int n, int l, int nmax,
 		VHZorbTHI::gr = new ThijssenGrid(nmax, rmax, delta);
 		VHZorbTHI::V = __V;
 		VHZorbTHI::__integrate(VHZorbTHI::gr->h, accuracy, 
-				Z, l, VHZorbTHI::gr, VHZorbTHI::e);
+				Z, l, *VHZorbTHI::gr, VHZorbTHI::e);
 	}
 
 double Verlet_HZorb_THI::__V(double &r, double &y, int &ZZ, int &ll, 
-		ThijssenGrid *ggr, double &ee){
-	return pow(ggr->delta, 2)*(.25 + 2.*pow(r+ggr->rp, 2)*((.5*ll*(ll+1) 
+		ThijssenGrid &ggr, double &ee){
+	return pow(ggr.delta, 2)*(.25 + 2.*pow(r+ggr.rp, 2)*((.5*ll*(ll+1) 
 					- r*ZZ)/pow(r, 2) - ee))*y;
 }
 
