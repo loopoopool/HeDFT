@@ -4,6 +4,13 @@
 #include "hydrogenic.h"
 #include <cmath>
 
+namespace numc{
+	const double a13{1./3.}, a23{2./3.}, a76{7./6.}, a43{4./3.},
+	      CA_A_u{.0311}, CA_B_u{-.048}, CA_C_u{.002}, CA_D_u{.0116},
+	      CA_gamma_u{-.1423}, CA_beta1_u{1.0529}, CA_beta2_u{.3334},
+	      aVx{3./(4.*M_PI*M_PI)};
+}
+
 /*************************************************
  * CLASSES DECLARATIONS
  *************************************************/
@@ -51,14 +58,14 @@ template<typename GRID, typename ...T> class HeDFT{
 		HeDFT(const HeDFT&);
 		virtual ~HeDFT();
 		double energy() const;
+		double KSenergy() const;
 	protected:
-		ArrayXd __vxc_CeperleyAdler() const;
+		ArrayXd __Vc_CA() const;
+		ArrayXd __Vx_CA() const;
 		void __KS_solve(double&);
 		const unsigned int Z=2;
-		double E;
-		const double CA_A_u{.0311}, CA_B_u{-.048}, CA_C_u{.002}, CA_D_u{.0116},
-		      CA_gamma_u{-.1423}, CA_beta1_u{1.0529}, CA_beta2_u{.3334};
-		ArrayXd ns;
+		double E, eKS;
+		ArrayXd n;
 		Verlet_HZorb<GRID, T...> *hzo;
 		Hartree<GRID> *V_H;
 		Func<int, ArrayXd, GRID, double> f;
@@ -68,14 +75,16 @@ using HeDFTHOM = HeDFT<HomogeneousGrid, int, int, double>;
 
 struct HeDFT_HOM : public HeDFTHOM{
 	HeDFT_HOM(int, double, double);
-	static double __HeKSfunc(int&, double&, ArrayXd&, HomogeneousGrid&, double&);
+	static double __HeKSfunc(int&, double&, ArrayXd&, HomogeneousGrid&, 
+			double&);
 };
 
 using HeDFTTHI = HeDFT<ThijssenGrid, int, int, ThijssenGrid, double>;
 
 struct HeDFT_THI : public HeDFTTHI{
 	HeDFT_THI(int, double, double, double);
-	static double __HeKSfunc(int&, double&, ArrayXd&, ThijssenGrid&, double&);
+	static double __HeKSfunc(int&, double&, ArrayXd&, ThijssenGrid&, 
+			double&);
 };
 
 /*************************************************
@@ -91,18 +100,18 @@ Hartree<GRID>::Hartree(const Hartree &o): accuracy(o.accuracy), f(o.f), gr(o.gr)
 
 template <typename GRID>
 ArrayXd Hartree<GRID>::operator()(ArrayXd &n){
-	double a, amin = 0.,
-	       amax = Urmax/gr.rmax + .5*gr.rmax*(pow(gr.r, 2)*n).maxCoeff();
-	ArrayXd U(gr.nmax);
+	double a, amin, amax, U1{gr.rmax/gr.nmax};
 	ArrayXi j = ArrayXi::LinSpaced(gr.nmax, 0, gr.nmax-1);
-	while (abs(amax-amin)/(amax+amin)*.5 > accuracy){
+	ArrayXd U(gr.nmax), wf{gr.wfFactor()};
+	amax = Urmax/gr.rmax + gr.rmax*(gr.r*n).maxCoeff();
+	amin = Urmax/gr.rmax;
+	while (abs(amax-amin) > accuracy){
 		a = .5*(amax+amin);
-		U = Verlet(EPS, 1e-10, j, gr.h, Mode::FORWARD, f, n, gr);
-		U *= gr.wfFactor();
+		U = Verlet(EPS, U1, j, gr.h, f, n, gr)*wf;
 		U += a*gr.r;
-		if (U[gr.nmax-1] > Urmax) amax = a;
+		if (U[gr.nmax-1] - Urmax > accuracy) amax = a;
 		else amin = a;
-	} 
+	}	
 	VH = U/gr.r;
 	return VH;
 }
@@ -126,7 +135,7 @@ double Hartree_THI::__HartreeFunc(int &i, double &U,
 }
 
 template <typename GRID, typename ...T>
-HeDFT<GRID, T...>::HeDFT(const HeDFT &o): E(o.E), ns(o.ns){
+HeDFT<GRID, T...>::HeDFT(const HeDFT &o): E(o.E), n(o.n){
 	hzo = new Verlet_HZorb<GRID, T...>(*o.hzo);
 	V_H = new Hartree<GRID>(*o.V_H);
 }
@@ -135,27 +144,33 @@ template <typename GRID, typename ...T>
 HeDFT<GRID, T...>::~HeDFT(){ delete hzo; delete V_H; }
 
 template <typename GRID, typename ...T>
-ArrayXd HeDFT<GRID, T...>::__vxc_CeperleyAdler() const{
+ArrayXd HeDFT<GRID, T...>::__Vx_CA() const{ return -pow(numc::aVx*n, numc::a13); }
+
+template <typename GRID, typename ...T>
+ArrayXd HeDFT<GRID, T...>::__Vc_CA() const{
 	int nmax = hzo->grid()->nmax;
 	double ec;
-	const double a13{1./3.}, a23{2./3.}, a76{7./6.}, a43{4./3.};
-	ArrayXd Vx = -pow(ns/a43/(M_PI*M_PI), 1./3.);
-//		rs = pow(a43*M_PI*nn, -1./3.),
-//		Vc(nmax);
-//	for (int i=0; i<nmax; ++i)
-//		if (abs(rs[i]-1.) < EPS)
-//			Vc[i] = CA_A_u*(log(rs[i]) - a13) + CA_B_u + a23*CA_C_u*rs[i]*log(rs[i]) 
-//				+ a13*(2.*CA_D_u - CA_C_u)*rs[i];
-//		else{
-//			ec = CA_gamma_u/(1. + CA_beta1_u*pow(rs[i], 2) + CA_beta2_u*rs[i]);
-//			Vc[i] = pow(ec, 2)/CA_gamma_u*(1. + a76*CA_beta1_u*pow(rs[i], 2) 
-//					+ a43*CA_beta2_u*rs[i]);
-//		}
-	return Vx;
+	ArrayXd rs = pow((numc::a43*M_PI)*n, -numc::a13), Vc(nmax);
+	for (int i=0; i<nmax; ++i)
+		if (abs(rs[i]-1.) < EPS)
+			Vc[i] = numc::CA_A_u*(log(rs[i]) - numc::a13) + numc::CA_B_u 
+				+ numc::a23*numc::CA_C_u*rs[i]*log(rs[i]) 
+				+ numc::a13*(2.*numc::CA_D_u - numc::CA_C_u)*rs[i];
+		else{
+			ec = numc::CA_gamma_u/(1. + numc::CA_beta1_u*pow(rs[i], 2) + 
+					numc::CA_beta2_u*rs[i]);
+			Vc[i] = pow(ec, 2)/numc::CA_gamma_u*(1. + numc::a76 *
+					numc::CA_beta1_u*pow(rs[i], 2) + 
+					numc::a43*numc::CA_beta2_u*rs[i]);
+		}
+	return Vc;
 }
 
 template <typename GRID, typename ...T>
 double HeDFT<GRID, T...>::energy() const{ return E; }
+
+template <typename GRID, typename ...T>
+double HeDFT<GRID, T...>::KSenergy() const{ return eKS; }
 
 template <typename GRID>
 double average(ArrayXd &n, ArrayXd &y, GRID &gr){
@@ -169,57 +184,65 @@ double average(ArrayXd &n, ArrayXd &&y, GRID &gr){
 
 template <typename GRID, typename ...T>
 void HeDFT<GRID, T...>::__KS_solve(double &accuracy){
-	double e{hzo->energy()}, emin, emax{EPS}, E0{EPS};
+	double emin, emax, E0{EPS}, phi1{hzo->grid()->rmax/hzo->grid()->nmax};
 	int nn = hzo->grid()->nmax;
-	unsigned int nodes;
-	ArrayXd phi(nn), V(nn), Vi(nn), Vx(nn);
+	ArrayXd phi(nn), V(nn), Vx(nn), Vc(nn), wf{hzo->grid()->wfFactor()};
 	ArrayXi j = ArrayXi::LinSpaced(nn, 0, nn-1);
-	Vx = __vxc_CeperleyAdler();
-	V = (*V_H)(ns) + Vx;
-	E = 2*e - .5*average(ns, V + .5*Vx, *hzo->grid());
-	clog << "E0 = " << E << endl;
+	eKS = hzo->energy();
+	Vx = __Vx_CA();
+	Vc = __Vc_CA();
+	V = (*V_H)(n) + Vx + Vc;
+	E = 2*eKS - .5*average(n, (*V_H)() + .5*Vx + Vc, *hzo->grid());
+	emax = EPS;
 	emin = -4.;
-	while (abs(e-E0) > accuracy){
-		E0 = e;
-		e = .5*(emax+emin);
-		phi = Verlet(EPS, 1e-10, j, hzo->grid()->h, Mode::BACKWARD, f, V, *hzo->grid(), e);
-		phi *= hzo->grid()->wfFactor();
-		nodes = 0;
-		for (int i=0; i<nn-1; ++i)
-			if (phi[i]*phi[i+1] < 0.) nodes += 1;
-		if (nodes > 0) emax = e;
-		else emin = e;
-		phi /= sqrt(simpson(hzo->grid()->jacobian()*pow(phi, 2), hzo->grid()->h));
-		ns = 2.*pow(phi/hzo->r(), 2);
-		Vx = __vxc_CeperleyAdler();
-		V = (*V_H)(ns) + Vx;
-		E = 2.*e - .5*average(ns, (*V_H)() + .5*Vx, *hzo->grid());
+	while (abs(E-E0) > accuracy){
+		E0 = E;
+		while(abs(emax-emin) > accuracy){
+			eKS = .5*(emax+emin);
+			phi = VerletREV(EPS, phi1, j, hzo->grid()->h, f, V, 
+					*hzo->grid(), eKS)*wf;
+			phi /= sqrt(simpson(hzo->grid()->jacobian()*pow(phi, 2), 
+						hzo->grid()->h));
+			if (phi[0] > EPS) emin = eKS;
+			else emax = eKS;
+		}
+		emax=EPS;
+		emin=-4.;
+		n = 2.*pow(phi/hzo->r(), 2);
+		Vx = __Vx_CA();
+		Vc = __Vc_CA();
+		V = (*V_H)(n) + Vx + Vc;
+		//compute the correlation energy functional and
+		//find the right coeffcient of Vc in the energy's formula
+		E = 2.*eKS - .5*average(n, (*V_H)() + .5*Vx + Vc, *hzo->grid());
 	}
-	clog << "e = " << e << endl;
 }
 
 HeDFT_HOM::HeDFT_HOM(int nmax, double rmax, double accuracy){
 	hzo = new Verlet_HZorb_HOM(Z, 1, 0, nmax, rmax, accuracy);
-	ns = 2.*pow(hzo->u()/hzo->r(), 2);
+	n = 2.*pow(hzo->u()/hzo->r(), 2);
 	V_H = new Hartree_HOM(Z, accuracy, *hzo->grid());
 	f = __HeKSfunc;
 	__KS_solve(accuracy);
 }
 
-double HeDFT_HOM::__HeKSfunc(int &i, double &y, ArrayXd &V, HomogeneousGrid &gr, double &e){
+double HeDFT_HOM::__HeKSfunc(int &i, double &y, ArrayXd &V, HomogeneousGrid &gr, 
+		double &e){
 	return 2.*(-2./gr.r[i] + V[i] - e)*y; 
 }
 
 HeDFT_THI::HeDFT_THI(int nmax, double rmax, double accuracy, double delta){
 	hzo = new Verlet_HZorb_THI(Z, 1, 0, nmax, rmax, accuracy, delta);
-	ns = pow(hzo->u()/hzo->r(), 2);
+	n = 2.*pow(hzo->u()/hzo->r(), 2);
 	V_H = new Hartree_THI(Z, accuracy, *hzo->grid());
 	f = __HeKSfunc;
 	__KS_solve(accuracy);
 }
 
-double HeDFT_THI::__HeKSfunc(int &i, double &y, ArrayXd &V, ThijssenGrid &gr, double &e){
-	return pow(gr.delta, 2)*(.25 + 2.*pow(gr.r[i] + gr.rp, 2)*(-2./gr.r[i] + V[i] - e))*y;
+double HeDFT_THI::__HeKSfunc(int &i, double &y, ArrayXd &V, ThijssenGrid &gr, 
+		double &e){
+	return pow(gr.delta, 2)*(.25 + 2.*pow(gr.r[i] + gr.rp, 2)*(-2./gr.r[i] 
+				+ V[i] - e))*y;
 }
 
 #endif

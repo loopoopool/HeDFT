@@ -25,31 +25,27 @@ enum GridType{ HOMOGENEOUS, THIJSSEN };
 template <typename X, typename ...T>
 using Func = function<double(X&, double&, T&...)>;
 
-template <typename X, typename ...T> ArrayXd Verlet(double y0, double y1, 
-		Eigen::Array<X, Dynamic, 1> &t, double step, Mode m, Func<X, T...> &f, T& ...par){
+template <typename X, typename ...T> ArrayXd VerletREV(double y0, double y1, 
+		Eigen::Array<X, Dynamic, 1> &t, double step, Func<X, T...> &f, T& ...par){
 	int n = t.size();
 	ArrayXd y(n);
-	Array<X, Dynamic, 1> tt(n);
-	switch(m){
-		case Mode::FORWARD:
-			y(0) = y0;
-			y(1) = y1;
-			tt = t;
-			break;
-		case Mode::BACKWARD:
-			y(n-1) = y0;
-			y(n-2) = y1;
-			y = y.reverse();
-			tt = t.reverse();
-			break;
-		default: throw;
-	}
-	for (int i=1; i<n-1; ++i)
-		y(i+1) = 2.*y(i) - y(i-1) + pow(step, 2)*f(tt(i), y(i), par...);
-	if (m==Mode::BACKWARD) return y.reverse();
-	else return y;
+	y(n-1) = y0;
+	y(n-2) = y1;
+	for (int i=n-2; i>0; --i)
+		y(i-1) = 2.*y(i) - y(i+1) + pow(step, 2)*f(t(i), y(i), par...);
+	return y;
 }
 
+template <typename X, typename ...T> ArrayXd Verlet(double y0, double y1, 
+		Eigen::Array<X, Dynamic, 1> &t, double step, Func<X, T...> &f, T& ...par){
+	int n = t.size();
+	ArrayXd y(n);
+	y[0] = y0;
+	y[1] = y1;
+	for (int i=1; i<n-1; ++i)
+		y(i+1) = 2.*y(i) - y(i-1) + pow(step, 2)*f(t(i), y(i), par...);
+	return y;
+}
 /*************************************************
  * CLASSES DECLARATIONS
  *************************************************/
@@ -129,7 +125,7 @@ Grid::Grid(unsigned long nmax, double rmax):nmax(nmax), rmax(rmax), h(rmax/nmax)
 Grid::Grid(const Grid &o): nmax(o.nmax), rmax(o.rmax), h(o.h), r(o.r){}
 
 HomogeneousGrid::HomogeneousGrid(unsigned long nmax, double rmax): Grid(nmax, rmax){
-	Grid::r = ArrayXd::LinSpaced(nmax, 0., nmax)*Grid::h + EPS;
+	Grid::r = ArrayXd::LinSpaced(nmax, EPS, nmax-1)*Grid::h + EPS;
 }
 
 HomogeneousGrid::HomogeneousGrid(const HomogeneousGrid &o): Grid(o){}
@@ -168,18 +164,15 @@ Verlet_HZorb<GRID, T...>::~Verlet_HZorb(){delete gr;}
 template <typename GRID, class ...T> void Verlet_HZorb<GRID, T...>::__integrate(double &step, 
 	double &accuracy, T& ...par){
 	double emin=-2.*pow(Z, 2), emax=EPS;
-	ArrayXd uuu, j = ArrayXd::LinSpaced(gr->nmax, 0, gr->nmax-1);
+	ArrayXd j = ArrayXd::LinSpaced(gr->nmax, 0, gr->nmax-1),
+		wf = gr->wfFactor();
 	while (abs(emax-emin)>accuracy){
 		e = .5*(emax+emin);
-		uu = Verlet<double, T...>(0., 1e-10, gr->r, gr->h, Mode::BACKWARD, V, par...);
-		uu *= gr->wfFactor();
-		int nodes = 0;
-		for (int i=0; i<gr->nmax-1; ++i)
-			if (uu[i]*uu[i+1] < 0.) nodes += 1;
-		if (nodes > n-l-1) emax = e;
-		else emin = e;
+		uu = VerletREV(EPS, pow(gr->h, l+1), gr->r, gr->h, V, par...)*wf;
+		uu /= sqrt(simpson(gr->jacobian()*pow(uu, 2), gr->h));
+		if (uu[0] > EPS) emin = e;
+		else emax = e;
 	}
-	uu /= sqrt(simpson(gr->jacobian()*pow(uu, 2), gr->h));
 }
 
 
