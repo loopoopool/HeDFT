@@ -1,6 +1,7 @@
 #ifndef HARTREE_H
 #define HARTREE_H
-#include<Eigen/Dense>
+#include <Eigen/Dense>
+#include "grid.h"
 
 using namespace Eigen;
 

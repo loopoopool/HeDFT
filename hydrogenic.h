@@ -57,12 +57,12 @@ Verlet_HZorb<GRID, T...>::~Verlet_HZorb(){delete gr;}
 template <typename GRID, class ...T> 
 void Verlet_HZorb<GRID, T...>::__integrate(double &step, 
 	double &accuracy, T& ...par){
-	double emin=-2.*pow(Z, 2), emax=EPS;
+	double emin{2.*pow(Z, 2)}, emax{EPS}, uu1{pow(gr->rmax/gr->nmax, l+1)};
 	ArrayXd j = ArrayXd::LinSpaced(gr->nmax, 0, gr->nmax-1),
 		wf = gr->wfFactor();
 	while (abs(emax-emin)>accuracy){
 		e = .5*(emax+emin);
-		uu = VerletREV(EPS, pow(gr->h, l+1), gr->r, gr->h, V, par...)*wf;
+		uu = VerletREV(EPS, uu1, gr->r, gr->h, V, par...)*wf;
 		uu /= sqrt(simpson(gr->jacobian()*pow(uu, 2), gr->h));
 		if (uu[0] > EPS) emin = e;
 		else emax = e;

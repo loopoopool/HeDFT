@@ -1,9 +1,7 @@
 #ifndef ATOM_H
 #define ATOM_H
-
 #include "hydrogenic.h"
 #include "hartree.h"
-#include <cmath>
 
 namespace numc{
 	const double a13{1./3.}, a23{2./3.}, a76{7./6.}, a43{4./3.},
